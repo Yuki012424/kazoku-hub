@@ -52,6 +52,8 @@ type View = "home" | "family" | "tools" | "settings";
 type BoardTab = "shopping" | "dinner" | "messages" | "trash" | "stock";
 type ToolTab = "calculator" | "pomodoro" | "weather" | "converter" | "sound";
 type QuickType = "shopping" | "message" | "dinner" | "stock";
+type CalculatorMode = "split" | "change";
+type ChangeRow = { id: string; name: string; amount: string; paid: string };
 
 type ShoppingItem = { id: string; store: string; item: string; sale: string; done: boolean };
 type TodoItem = { id: string; text: string; done: boolean };
@@ -182,6 +184,11 @@ function AppShell() {
   const [calcTotal, setCalcTotal] = useState("4800");
   const [calcPeople, setCalcPeople] = useState("3");
   const [calcTip, setCalcTip] = useState("0");
+  const [calculatorMode, setCalculatorMode] = useState<CalculatorMode>("change");
+  const [changeRows, setChangeRows] = useState<ChangeRow[]>([
+    { id: "payer-a", name: "A", amount: "1500", paid: "2000" },
+    { id: "payer-b", name: "B", amount: "2200", paid: "2700" },
+  ]);
   const [pomoSeconds, setPomoSeconds] = useState(25 * 60);
   const [pomoRunning, setPomoRunning] = useState(false);
   const [pomoMode, setPomoMode] = useState<"集中" | "休憩">("集中");
@@ -355,6 +362,17 @@ function AppShell() {
 
   const timeLabel = `${String(Math.floor(pomoSeconds / 60)).padStart(2, "0")}:${String(pomoSeconds % 60).padStart(2, "0")}`;
   const calcPerPerson = Math.ceil((Number(calcTotal || 0) + Number(calcTip || 0)) / Math.max(Number(calcPeople || 1), 1));
+  const changeSummary = useMemo(() => changeRows.map(row => ({
+    ...row,
+    amountValue: Number(row.amount || 0),
+    paidValue: Number(row.paid || 0),
+    change: Number(row.paid || 0) - Number(row.amount || 0),
+  })), [changeRows]);
+  const changeTotals = useMemo(() => ({
+    amount: changeSummary.reduce((sum, row) => sum + row.amountValue, 0),
+    paid: changeSummary.reduce((sum, row) => sum + row.paidValue, 0),
+    change: changeSummary.reduce((sum, row) => sum + row.change, 0),
+  }), [changeSummary]);
 
   const fetchWeather = async () => {
     const coords: Record<string, [number, number]> = {
@@ -417,6 +435,18 @@ function AppShell() {
     osc.start();
     noiseRef.current = osc;
     setSoundOn(true);
+  };
+
+  const updateChangeRow = (id: string, field: "name" | "amount" | "paid", value: string) => {
+    setChangeRows(rows => rows.map(row => row.id === id ? { ...row, [field]: value } : row));
+  };
+
+  const addChangeRow = () => {
+    setChangeRows(rows => [...rows, { id: uid("payer"), name: String.fromCharCode(65 + rows.length), amount: "", paid: "" }]);
+  };
+
+  const removeChangeRow = (id: string) => {
+    setChangeRows(rows => rows.length > 1 ? rows.filter(row => row.id !== id) : rows);
   };
 
   const navItems = [
@@ -492,7 +522,7 @@ function AppShell() {
       {renderBreadcrumb()}
       <div className="page-title-row"><div><p className="eyebrow">TOOLS / ひと息つく</p><h1>ひと息ツール</h1><p className="page-lede">計算する、整える、集中する。暮らしの小さな摩擦を減らします。</p></div></div>
       <div className="tool-tabs">{([['calculator', '電卓', <Calculator size={15} />], ['pomodoro', 'ポモドーロ', <Timer size={15} />], ['weather', '天気', <CloudSun size={15} />], ['converter', '単位変換', <Ruler size={15} />], ['sound', '環境音', <Volume2 size={15} />]] as const).map(([id, label, icon]) => <button key={id} className={toolTab === id ? "active" : ""} onClick={() => setToolTab(id)}>{icon}{label}</button>)}</div>
-      {toolTab === "calculator" && <div className="tool-grid"><div className="panel calculator-card"><div className="panel-heading"><div><p className="eyebrow">SMART CALCULATOR</p><h2>立替・割り勘をすぐ計算</h2></div><Calculator className="panel-icon" size={24} /></div><div className="calc-display"><span>ひとりあたり</span><strong>¥{calcPerPerson.toLocaleString()}</strong><small>合計 ¥{(Number(calcTotal || 0) + Number(calcTip || 0)).toLocaleString()} / {calcPeople || 1}人</small></div><div className="form-grid three"><label>合計金額<input type="number" value={calcTotal} onChange={e => setCalcTotal(e.target.value)} /></label><label>人数<input type="number" min="1" value={calcPeople} onChange={e => setCalcPeople(e.target.value)} /></label><label>追加分<input type="number" value={calcTip} onChange={e => setCalcTip(e.target.value)} /></label></div><div className="settlement-note"><span>端数は一人あたりに含めています</span><button className="button button-ghost" onClick={() => { navigator.clipboard?.writeText(`ひとりあたり ¥${calcPerPerson.toLocaleString()}`); toast.success("結果をコピーしました"); }}><Save size={15} />コピー</button></div></div><div className="panel side-note"><span className="number-badge">01</span><h3>家族の支払いも、気まずくしない。</h3><p>レジで迷う前に、席で合計を確認。お釣りや立替を含めた金額をシンプルに共有できます。</p></div></div>}
+      {toolTab === "calculator" && <div className="tool-grid"><div className="panel calculator-card"><div className="panel-heading"><div><p className="eyebrow">SMART CALCULATOR</p><h2>立替・割り勘をすぐ計算</h2></div><Calculator className="panel-icon" size={24} /></div><div className="calculator-mode-tabs"><button className={calculatorMode === "change" ? "active" : ""} onClick={() => setCalculatorMode("change")}>会計別お釣り指示</button><button className={calculatorMode === "split" ? "active" : ""} onClick={() => setCalculatorMode("split")}>通常の割り勘</button></div>{calculatorMode === "change" ? <div className="change-mode-content"><div className="change-explainer"><ArrowLeftRight size={17} /><span>会計ごとの金額と、レジで出す金額を入れると、集めたお釣りから誰がいくら取るかを指示します。</span></div><div className="change-table"><div className="change-table-head"><span>人</span><span>会計</span><span>出す金額</span><span>お釣り</span><span /></div>{changeSummary.map(row => <div className="change-row" key={row.id}><input className="payer-name" value={row.name} onChange={e => updateChangeRow(row.id, "name", e.target.value)} aria-label="支払う人" /><label><span>会計</span><input type="number" min="0" value={row.amount} onChange={e => updateChangeRow(row.id, "amount", e.target.value)} /></label><label><span>レジに出す</span><input type="number" min="0" value={row.paid} onChange={e => updateChangeRow(row.id, "paid", e.target.value)} /></label><strong className={row.change < 0 ? "change-negative" : "change-positive"}>{row.change >= 0 ? `¥${row.change.toLocaleString()}` : `あと¥${Math.abs(row.change).toLocaleString()}`}</strong><button className="icon-button danger" onClick={() => removeChangeRow(row.id)} title="行を削除"><Trash2 size={14} /></button></div>)}</div><button className="button button-ghost add-payer-button" onClick={addChangeRow}><Plus size={15} />会計を追加</button><div className="change-total-strip"><span>会計合計 <strong>¥{changeTotals.amount.toLocaleString()}</strong></span><span>レジへ <strong>¥{changeTotals.paid.toLocaleString()}</strong></span><span>お釣り合計 <strong>¥{changeTotals.change.toLocaleString()}</strong></span></div><div className="instruction-box"><div className="instruction-heading"><Check size={16} /><strong>集めたお金から取る指示</strong></div>{changeSummary.map(row => <div className="instruction-row" key={`instruction-${row.id}`}>{row.change > 0 ? <><strong>{row.name}</strong>は、集めたお金から<strong>¥{row.change.toLocaleString()}</strong>取る</> : row.change < 0 ? <><strong>{row.name}</strong>は、あと<strong>¥{Math.abs(row.change).toLocaleString()}</strong>出す</> : <><strong>{row.name}</strong>のお釣りはなし</>}</div>)}</div><button className="button button-ghost copy-instructions" onClick={() => { const text = changeSummary.map(row => row.change > 0 ? `${row.name}は集めたお金から${row.change}円取る` : row.change < 0 ? `${row.name}はあと${Math.abs(row.change)}円出す` : `${row.name}のお釣りはなし`).join("\n"); navigator.clipboard?.writeText(text); toast.success("お釣りの指示をコピーしました"); }}><Save size={15} />指示をコピー</button></div> : <div><div className="calc-display"><span>ひとりあたり</span><strong>¥{calcPerPerson.toLocaleString()}</strong><small>合計 ¥{(Number(calcTotal || 0) + Number(calcTip || 0)).toLocaleString()} / {calcPeople || 1}人</small></div><div className="form-grid three"><label>合計金額<input type="number" value={calcTotal} onChange={e => setCalcTotal(e.target.value)} /></label><label>人数<input type="number" min="1" value={calcPeople} onChange={e => setCalcPeople(e.target.value)} /></label><label>追加分<input type="number" value={calcTip} onChange={e => setCalcTip(e.target.value)} /></label></div><div className="settlement-note"><span>端数は一人あたりに含めています</span><button className="button button-ghost" onClick={() => { navigator.clipboard?.writeText(`ひとりあたり ¥${calcPerPerson.toLocaleString()}`); toast.success("結果をコピーしました"); }}><Save size={15} />コピー</button></div></div>}</div><div className="panel side-note"><span className="number-badge">01</span><h3>レジでお釣りを崩さない。</h3><p>会計ごとに多めに出した金額とお釣りを記録。まとめて返ってきたお釣りから、誰がいくら取るかをそのまま指示できます。</p><div className="location-note"><Check size={15} />例：Aは500円、Bは500円取る</div></div></div>}
       {toolTab === "pomodoro" && <div className="tool-grid"><div className="panel pomo-card"><div className="eyebrow">FOCUS TIMER</div><div className="pomo-mode"><span>{pomoMode}</span><span>/{pomoMode === "集中" ? "25分" : "5分"}</span></div><div className="timer-display">{timeLabel}</div><div className="timer-progress"><span style={{ width: `${100 - (pomoSeconds / (pomoMode === "集中" ? 25 * 60 : 5 * 60)) * 100}%` }} /></div><div className="timer-actions"><button className="button button-dark" onClick={() => setPomoRunning(!pomoRunning)}>{pomoRunning ? <Pause size={17} /> : <Play size={17} />}{pomoRunning ? "一時停止" : "開始"}</button><button className="button button-ghost" onClick={() => { setPomoRunning(false); setPomoSeconds(pomoMode === "集中" ? 25 * 60 : 5 * 60); }}><RefreshCw size={16} />リセット</button></div></div><div className="panel side-note coral-side"><span className="number-badge">02</span><h3>25分だけ、目の前のこと。</h3><p>集中と休憩を交互に。タイマーが終わったら、いったん立ち上がって深呼吸しましょう。</p><div className="mode-switch"><button className={pomoMode === "集中" ? "active" : ""} onClick={() => { setPomoMode("集中"); setPomoSeconds(25 * 60); setPomoRunning(false); }}>集中 25分</button><button className={pomoMode === "休憩" ? "active" : ""} onClick={() => { setPomoMode("休憩"); setPomoSeconds(5 * 60); setPomoRunning(false); }}>休憩 5分</button></div></div></div>}
       {toolTab === "weather" && <div className="tool-grid"><div className="panel weather-card"><div className="panel-heading"><div><p className="eyebrow">WEATHER & CLOTHES</p><h2>今日の空気に合わせる</h2></div><CloudSun className="panel-icon" size={24} /></div><div className="weather-controls"><label>地域<select value={weatherCity} onChange={e => setWeatherCity(e.target.value)}>{["東京", "大阪", "福岡", "札幌"].map(city => <option key={city}>{city}</option>)}</select></label><button className="button button-primary" onClick={fetchWeather}>{weatherLoading ? <RefreshCw className="spin" size={15} /> : <CloudSun size={15} />}{weatherLoading ? "取得中" : "天気を見る"}</button></div><div className="weather-result"><div className="weather-temp">{weather.temp}</div><div><strong>{weather.loaded ? `${weatherCity}の服装メモ` : "手動で地域を選べます"}</strong><p>{weather.label}</p></div></div><div className="weather-tips"><span><Wind size={15} />風が強い日は首元を守る</span><span><Sun size={15} />日差しがあれば帽子を</span></div></div><div className="panel side-note blue-side"><span className="number-badge">03</span><h3>出かける前の30秒チェック。</h3><p>外部APIから現在の気温を取得します。位置情報を使わず、地域を選ぶだけでも確認できます。</p><div className="location-note"><MapPin size={15} />位置情報は保存しません</div></div></div>}
       {toolTab === "converter" && <div className="tool-grid"><div className="panel converter-card"><div className="panel-heading"><div><p className="eyebrow">QUICK CONVERTER</p><h2>単位を迷わず変換</h2></div><ArrowLeftRight className="panel-icon" size={24} /></div><div className="category-pills">{[["length", "長さ"], ["weight", "重さ"], ["temperature", "温度"]].map(([id, label]) => <button key={id} className={convertCategory === id ? "active" : ""} onClick={() => setConvertCategory(id)}>{label}</button>)}</div><div className="converter-row"><input type="number" value={convertValue} onChange={e => setConvertValue(e.target.value)} /><select value={convertFrom} onChange={e => setConvertFrom(e.target.value)}>{conversionUnits.map(unit => <option key={unit}>{unit}</option>)}</select><ArrowLeftRight size={18} /><select value={convertTo} onChange={e => setConvertTo(e.target.value)}>{conversionUnits.map(unit => <option key={unit}>{unit}</option>)}</select><div className="convert-result">{convertedValue}</div></div></div><div className="panel side-note amber-side"><span className="number-badge">04</span><h3>レシピも、DIYも、すぐ確認。</h3><p>よく使う長さ・重さ・温度を、計算機を開かずに変換できます。</p></div></div>}
