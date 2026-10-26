@@ -1,7 +1,8 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
-import { familyHubState, InsertFamilyHubState, InsertUser, users } from "../drizzle/schema";
+import { familyGroups, familyHubState, familyMemberships, InsertFamilyHubState, InsertUser, users } from "../drizzle/schema";
 import { ENV } from './_core/env';
+import { randomBytes } from "node:crypto";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -57,17 +58,108 @@ export async function getUserByOpenId(openId: string) {
   return result.length > 0 ? result[0] : undefined;
 }
 
-export async function getFamilyHubState(): Promise<string | null> {
+function makeInviteCode() {
+  return randomBytes(4).toString("hex").toUpperCase();
+}
+
+async function getMembersForGroup(groupId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select({
+    openId: familyMemberships.userOpenId,
+    displayName: familyMemberships.displayName,
+    role: familyMemberships.role,
+  }).from(familyMemberships).where(eq(familyMemberships.groupId, groupId));
+}
+
+export async function getFamilyMemberships(openId: string) {
+  const db = await getDb();
+  if (!db) return [];
+  const rows = await db.select({
+    groupId: familyGroups.id,
+    groupName: familyGroups.name,
+    inviteCode: familyGroups.inviteCode,
+    role: familyMemberships.role,
+  }).from(familyMemberships)
+    .innerJoin(familyGroups, eq(familyMemberships.groupId, familyGroups.id))
+    .where(eq(familyMemberships.userOpenId, openId));
+
+  return Promise.all(rows.map(async row => ({
+    ...row,
+    members: await getMembersForGroup(row.groupId),
+  })));
+}
+
+export async function isFamilyMember(groupId: number, openId: string) {
+  const db = await getDb();
+  if (!db) return false;
+  const result = await db.select({ id: familyMemberships.id })
+    .from(familyMemberships)
+    .where(and(eq(familyMemberships.groupId, groupId), eq(familyMemberships.userOpenId, openId)))
+    .limit(1);
+  return result.length > 0;
+}
+
+export async function createFamilyGroup(name: string, ownerOpenId: string, displayName: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+  const inviteCode = makeInviteCode();
+  const inserted = await db.insert(familyGroups).values({
+    name,
+    inviteCode,
+    ownerOpenId,
+  }).$returningId();
+  const groupId = inserted[0]?.id;
+  if (!groupId) throw new Error("Failed to create family group");
+  await db.insert(familyMemberships).values({
+    groupId,
+    userOpenId: ownerOpenId,
+    displayName,
+    role: "owner",
+  });
+  return { groupId, groupName: name, inviteCode };
+}
+
+export async function joinFamilyGroup(inviteCode: string, userOpenId: string, displayName: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+  const groups = await db.select().from(familyGroups).where(eq(familyGroups.inviteCode, inviteCode)).limit(1);
+  const group = groups[0];
+  if (!group) throw new Error("招待コードが見つかりません");
+  const existing = await db.select({ id: familyMemberships.id })
+    .from(familyMemberships)
+    .where(and(eq(familyMemberships.groupId, group.id), eq(familyMemberships.userOpenId, userOpenId)))
+    .limit(1);
+  if (existing.length === 0) {
+    await db.insert(familyMemberships).values({
+      groupId: group.id,
+      userOpenId,
+      displayName,
+      role: "member",
+    });
+  }
+  return { groupId: group.id, groupName: group.name, inviteCode: group.inviteCode };
+}
+
+export async function updateFamilyMemberName(groupId: number, openId: string, displayName: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+  await db.update(familyMemberships)
+    .set({ displayName })
+    .where(and(eq(familyMemberships.groupId, groupId), eq(familyMemberships.userOpenId, openId)));
+}
+
+export async function getFamilyHubState(groupId: number): Promise<string | null> {
   const db = await getDb();
   if (!db) return null;
-  const result = await db.select().from(familyHubState).where(eq(familyHubState.id, 1)).limit(1);
+  const result = await db.select().from(familyHubState).where(eq(familyHubState.id, groupId)).limit(1);
   return result[0]?.payload ?? null;
 }
 
-export async function saveFamilyHubState(payload: string): Promise<void> {
+export async function saveFamilyHubState(groupId: number, payload: string): Promise<void> {
   const db = await getDb();
   if (!db) throw new Error("Database is not available");
-  const values: InsertFamilyHubState = { id: 1, payload, updatedAt: new Date() };
+  const values: InsertFamilyHubState = { id: groupId, payload, updatedAt: new Date() };
   await db.insert(familyHubState).values(values).onDuplicateKeyUpdate({
     set: { payload, updatedAt: new Date() },
   });
