@@ -15,6 +15,13 @@
       "when": 1792464700236,
       "tag": "0001_busy_thundra",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1792976050214,
+      "tag": "0002_lethal_blizzard",
+      "breakpoints": true
     }
   ]
 }

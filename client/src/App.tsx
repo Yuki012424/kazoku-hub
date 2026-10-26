@@ -39,6 +39,7 @@ import {
   Timer,
   Trash2,
   Utensils,
+  Users,
   Volume2,
   Wind,
   X,
@@ -47,6 +48,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { ThemeProvider, useTheme } from "@/contexts/ThemeContext";
 import ErrorBoundary from "@/components/ErrorBoundary";
 import { trpc } from "@/lib/trpc";
+import { startLogin } from "@/const";
+import { useAuth } from "@/_core/hooks/useAuth";
 
 type View = "home" | "family" | "tools" | "settings";
 type BoardTab = "shopping" | "dinner" | "messages" | "trash" | "stock";
@@ -54,6 +57,8 @@ type ToolTab = "calculator" | "pomodoro" | "weather" | "converter" | "sound";
 type QuickType = "shopping" | "message" | "dinner" | "stock";
 type CalculatorMode = "split" | "change";
 type ChangeRow = { id: string; name: string; amount: string; paid: string };
+type FamilyMember = { openId: string; displayName: string; role: "owner" | "member" };
+type FamilyGroup = { groupId: number; groupName: string; inviteCode: string; role: "owner" | "member"; members: FamilyMember[] };
 
 type ShoppingItem = { id: string; store: string; item: string; sale: string; done: boolean };
 type TodoItem = { id: string; text: string; done: boolean };
@@ -72,6 +77,7 @@ type HubState = {
 };
 
 const LOCAL_KEY = "kazoku-hub-state-v1";
+const ACTIVE_GROUP_KEY = "kazoku-hub-active-group-v1";
 const TOUR_KEY = "kazoku-hub-tour-dismissed";
 const defaultMembers = ["ゆうき", "あおい", "そら"];
 const dinnerOptions = ["食べる", "いらない", "帰宅が遅くなる", "外食・各自"];
@@ -134,13 +140,31 @@ function normalizeState(value: unknown): HubState {
   };
 }
 
-function loadLocalState(): HubState {
+function loadLocalState(storageKey = LOCAL_KEY): HubState {
   try {
-    const raw = localStorage.getItem(LOCAL_KEY);
+    const raw = localStorage.getItem(storageKey);
     return raw ? normalizeState(JSON.parse(raw)) : cloneDefault();
   } catch {
     return cloneDefault();
   }
+}
+
+function bindStateToGroup(value: HubState, members: FamilyMember[]): HubState {
+  if (members.length === 0) return value;
+  const legacyNames = value.memberNames;
+  const legacyStatuses = value.dinner.statuses;
+  const statuses: Record<string, string> = {};
+  members.forEach((member, index) => {
+    statuses[member.openId] = legacyStatuses[member.openId]
+      ?? legacyStatuses[member.displayName]
+      ?? legacyStatuses[legacyNames[index]]
+      ?? "未回答";
+  });
+  return {
+    ...value,
+    memberNames: members.map(member => member.displayName),
+    dinner: { ...value.dinner, statuses },
+  };
 }
 
 function formatDate(date = new Date()) {
@@ -160,6 +184,15 @@ function uid(prefix: string) {
 
 function AppShell() {
   const { theme, toggleTheme } = useTheme();
+  const auth = useAuth();
+  const groupsQuery = trpc.family.list.useQuery(undefined, { enabled: auth.isAuthenticated, retry: false });
+  const [activeGroupId, setActiveGroupId] = useState<number | null>(() => {
+    const stored = Number(localStorage.getItem(ACTIVE_GROUP_KEY));
+    return Number.isInteger(stored) && stored > 0 ? stored : null;
+  });
+  const activeGroup = (groupsQuery.data as FamilyGroup[] | undefined)?.find(group => group.groupId === activeGroupId);
+  const activeMembers = activeGroup?.members ?? [];
+  const currentMember = activeMembers.find(member => member.openId === auth.user?.openId);
   const [view, setView] = useState<View>("home");
   const [boardTab, setBoardTab] = useState<BoardTab>("shopping");
   const [toolTab, setToolTab] = useState<ToolTab>("calculator");
@@ -174,7 +207,7 @@ function AppShell() {
   const [messageDraft, setMessageDraft] = useState("");
   const [stockDraft, setStockDraft] = useState({ name: "", date: "" });
   const [memberDrafts, setMemberDrafts] = useState<string[]>(() => state.memberNames);
-  const [selectedMember, setSelectedMember] = useState(defaultMembers[0]);
+  const [profileDraft, setProfileDraft] = useState("");
   const [requestDraft, setRequestDraft] = useState("");
   const [menuDraft, setMenuDraft] = useState(state.dinner.menu);
   const [todoDraft, setTodoDraft] = useState("");
@@ -203,19 +236,49 @@ function AppShell() {
   const audioRef = useRef<AudioContext | null>(null);
   const noiseRef = useRef<OscillatorNode | null>(null);
   const saveMutation = trpc.hub.saveState.useMutation();
-  const cloudState = trpc.hub.getState.useQuery(undefined, { retry: false });
+  const profileMutation = trpc.family.updateProfile.useMutation();
+  const cloudState = trpc.hub.getState.useQuery({ groupId: activeGroupId ?? 0 }, { enabled: Boolean(auth.isAuthenticated && activeGroupId), retry: false });
 
   useEffect(() => {
-    if (cloudState.data) {
-      const next = normalizeState(cloudState.data);
-      setState(next);
-      setMemberDrafts(next.memberNames);
-      if (!next.memberNames.includes(selectedMember)) setSelectedMember(next.memberNames[0]);
-      setSyncText("クラウドと同期済み");
-    } else if (cloudState.isError) {
-      setSyncText("この端末に保存中");
+    if (!groupsQuery.data) return;
+    const groups = groupsQuery.data as FamilyGroup[];
+    if (groups.length === 0) {
+      setActiveGroupId(null);
+      return;
     }
-  }, [cloudState.data, cloudState.isError]);
+    const stored = Number(localStorage.getItem(ACTIVE_GROUP_KEY));
+    const nextId = groups.some(group => group.groupId === stored)
+      ? stored
+      : groups[0].groupId;
+    if (nextId !== activeGroupId) {
+      setActiveGroupId(nextId);
+      localStorage.setItem(ACTIVE_GROUP_KEY, String(nextId));
+      setState(loadLocalState(`${LOCAL_KEY}-${nextId}`));
+    }
+  }, [groupsQuery.data, activeGroupId]);
+
+  useEffect(() => {
+    if (!activeGroupId || !activeMembers.length) return;
+    setProfileDraft(currentMember?.displayName ?? "");
+    setMemberDrafts(activeMembers.map(member => member.displayName));
+  }, [activeGroupId, activeMembers, currentMember?.displayName]);
+
+  useEffect(() => {
+    if (!activeGroupId || cloudState.isLoading) return;
+    const storageKey = `${LOCAL_KEY}-${activeGroupId}`;
+    if (cloudState.data) {
+      const next = bindStateToGroup(normalizeState(cloudState.data), activeMembers);
+      setState(next);
+      localStorage.setItem(storageKey, JSON.stringify(next));
+      setSyncText("クラウドと同期済み");
+    } else if (!cloudState.isError) {
+      const next = bindStateToGroup(loadLocalState(storageKey), activeMembers);
+      setState(next);
+      setSyncText("この家族の端末に保存中");
+    } else {
+      setSyncText("同期できないため端末に保存中");
+    }
+  }, [activeGroupId, activeMembers, cloudState.data, cloudState.isError, cloudState.isLoading]);
 
   useEffect(() => {
     if (!pomoRunning) return;
@@ -238,9 +301,14 @@ function AppShell() {
 
   const commit = (next: HubState, message = "保存済み") => {
     setState(next);
-    localStorage.setItem(LOCAL_KEY, JSON.stringify(next));
+    const storageKey = activeGroupId ? `${LOCAL_KEY}-${activeGroupId}` : LOCAL_KEY;
+    localStorage.setItem(storageKey, JSON.stringify(next));
+    if (!activeGroupId) {
+      if (message) toast.error("先に家族グループを作成または参加してください");
+      return;
+    }
     setSyncText("保存中…");
-    saveMutation.mutate({ state: next as unknown as Record<string, unknown> }, {
+    saveMutation.mutate({ groupId: activeGroupId, state: next as unknown as Record<string, unknown> }, {
       onSuccess: () => setSyncText("クラウドと同期済み"),
       onError: () => setSyncText("この端末に保存中"),
     });
@@ -255,27 +323,24 @@ function AppShell() {
   const remainingShopping = state.shopping.filter(item => !item.done);
   const remainingTodos = state.todos.filter(item => !item.done);
   const stockAlerts = state.stock.filter(item => daysUntil(item.date) <= 30);
-  const statusSummary = Object.values(state.dinner.statuses).filter(status => status === "食べる").length;
-  const familyMembers = state.memberNames;
+  const familyMemberRecords: FamilyMember[] = activeMembers.length > 0
+    ? activeMembers
+    : state.memberNames.map((displayName, index) => ({ openId: `legacy-${index}`, displayName, role: "member" as const }));
+  const familyMembers = familyMemberRecords.map(member => member.displayName);
+  const currentMemberName = currentMember?.displayName ?? familyMembers[0] ?? "自分";
+  const dinnerStatusFor = (member: FamilyMember) => state.dinner.statuses[member.openId] ?? state.dinner.statuses[member.displayName] ?? "未回答";
+  const statusSummary = familyMemberRecords.filter(member => dinnerStatusFor(member) === "食べる").length;
 
-  const renameMember = (index: number, value: string) => {
-    const nextName = value.trim() || defaultMembers[index] || "家族";
-    const oldName = state.memberNames[index];
-    const nextMembers = [...state.memberNames];
-    if (nextMembers.some((name, memberIndex) => memberIndex !== index && name === nextName)) {
-      setMemberDrafts(state.memberNames);
-      return toast.error("同じ名前は登録できません");
-    }
-    nextMembers[index] = nextName;
-    const statuses = { ...state.dinner.statuses };
-    if (oldName && oldName !== nextName && statuses[oldName] !== undefined) {
-      statuses[nextName] = statuses[oldName];
-      delete statuses[oldName];
-    }
-    const next = { ...state, memberNames: nextMembers, dinner: { ...state.dinner, statuses } };
-    setMemberDrafts(nextMembers);
-    if (selectedMember === oldName) setSelectedMember(nextName);
-    commit(next, "家族の名前を保存しました");
+  const saveProfileName = () => {
+    const nextName = profileDraft.trim();
+    if (!activeGroupId || !nextName || !auth.user) return toast.error("表示名を入力してください");
+    profileMutation.mutate({ groupId: activeGroupId, displayName: nextName }, {
+      onSuccess: async () => {
+        await groupsQuery.refetch();
+        toast.success("表示名を保存しました");
+      },
+      onError: error => toast.error(error.message),
+    });
   };
 
   const addShopping = (draft = shoppingDraft) => {
@@ -324,7 +389,8 @@ function AppShell() {
   };
 
   const updateDinnerStatus = (status: string) => {
-    commit({ ...state, dinner: { ...state.dinner, statuses: { ...state.dinner.statuses, [selectedMember]: status } } }, "夕飯の予定を更新しました");
+    const memberKey = auth.user?.openId ?? familyMemberRecords[0]?.openId ?? currentMemberName;
+    commit({ ...state, dinner: { ...state.dinner, statuses: { ...state.dinner.statuses, [memberKey]: status } } }, "夕飯の予定を更新しました");
   };
 
   const toggleShopping = (id: string) => {
@@ -501,7 +567,7 @@ function AppShell() {
       )}
       {boardTab === "dinner" && (
         <div className="board-layout dinner-layout">
-          <div className="panel accent-panel coral-panel"><div className="panel-heading"><div><p className="eyebrow">DINNER CHECK-IN</p><h2>今日の夕飯、いる？</h2></div><Utensils className="panel-icon" size={24} /></div><div className="member-select"><label>回答する人<select value={selectedMember} onChange={e => setSelectedMember(e.target.value)}>{familyMembers.map(member => <option key={member}>{member}</option>)}</select></label><span className="status-mark">{state.dinner.statuses[selectedMember] ?? "未回答"}</span></div><div className="radio-grid">{dinnerOptions.map(option => <label key={option} className={`radio-card ${state.dinner.statuses[selectedMember] === option ? "selected" : ""}`}><input type="radio" name="dinner-status" checked={state.dinner.statuses[selectedMember] === option} onChange={() => updateDinnerStatus(option)} />{option}</label>)}</div><div className="member-status-list">{familyMembers.map(member => <div key={member}><span>{member}</span><span className="status-pill">{state.dinner.statuses[member] ?? "未回答"}</span></div>)}</div></div>
+          <div className="panel accent-panel coral-panel"><div className="panel-heading"><div><p className="eyebrow">DINNER CHECK-IN</p><h2>今日の夕飯、いる？</h2></div><Utensils className="panel-icon" size={24} /></div><div className="member-select"><div><span className="mini-label">あなたの回答</span><strong>{currentMemberName}</strong><small>ログイン中のアカウントで回答します</small></div><span className="status-mark">{auth.user ? dinnerStatusFor({ openId: auth.user.openId, displayName: currentMemberName, role: "member" }) : "未回答"}</span></div><div className="radio-grid">{dinnerOptions.map(option => { const myStatus = auth.user ? dinnerStatusFor({ openId: auth.user.openId, displayName: currentMemberName, role: "member" }) : "未回答"; return <label key={option} className={`radio-card ${myStatus === option ? "selected" : ""}`}><input type="radio" name="dinner-status" checked={myStatus === option} onChange={() => updateDinnerStatus(option)} />{option}</label>; })}</div><div className="member-status-list">{familyMemberRecords.map(member => <div key={member.openId}><span>{member.displayName}{member.openId === auth.user?.openId && <small>（あなた）</small>}</span><span className="status-pill">{dinnerStatusFor(member)}</span></div>)}</div></div>
           <div className="stack-list"><div className="panel"><div className="section-heading"><div><p className="eyebrow">REQUESTS</p><h3>食べたいもの</h3></div><MessageSquare size={20} /></div><div className="inline-form"><input value={requestDraft} onChange={e => setRequestDraft(e.target.value)} onKeyDown={e => e.key === "Enter" && addRequest()} placeholder="リクエストをひとこと" /><button className="button button-primary" onClick={addRequest}><Plus size={15} />追加</button></div><div className="request-list">{state.dinner.requests.map((request, index) => <div className="request-chip" key={`${request}-${index}`}>{request}<button onClick={() => commit({ ...state, dinner: { ...state.dinner, requests: state.dinner.requests.filter((_, i) => i !== index) } }, "リクエストを削除しました")}><X size={13} /></button></div>)}</div></div><div className="panel menu-panel"><div className="section-heading"><div><p className="eyebrow">TONIGHT'S MENU</p><h3>今日の決定メニュー</h3></div><Pencil size={19} /></div><div className="inline-form"><input value={menuDraft} onChange={e => setMenuDraft(e.target.value)} placeholder="メニューを決める" /><button className="button button-coral" onClick={updateMenu}>決定</button></div>{state.dinner.menu && <p className="menu-result">{state.dinner.menu}</p>}</div></div>
         </div>
       )}
@@ -539,11 +605,51 @@ function AppShell() {
     return <section className="home-section"><div className="home-hero"><div className="hero-copy"><div className="date-stamp"><CalendarDays size={15} />{formatDate()}</div><h1>今日の家族会議を、<br /><em>30秒で。</em></h1><p>{state.message}</p><div className="hero-actions"><button className="button button-primary" onClick={() => setModal("quick")}><Plus size={16} />クイック追加</button><button className="text-button" onClick={() => changeView("family")}>家族ボードを見る <ChevronRight size={15} /></button></div></div><div className="hero-aside"><div className="sync-card"><div className="sync-dot" /><div><span>共有ステータス</span><strong>{syncText}</strong></div><button className="icon-button" onClick={() => cloudState.refetch()} title="再同期"><RefreshCw size={15} /></button></div>{!tourDismissed && <div className="tour-card"><div className="tour-top"><span className="eyebrow">FIRST LOOK / 0{tourSlide + 1}</span><button className="icon-button" onClick={dismissTour}><X size={15} /></button></div><h3>{slide[0]}</h3><p>{slide[1]}</p><div className="tour-controls"><div className="tour-dots">{[0, 1, 2].map(index => <button key={index} className={index === tourSlide ? "active" : ""} onClick={() => setTourSlide(index)} aria-label={`${index + 1}枚目`} />)}</div><button onClick={() => tourSlide === 2 ? dismissTour() : setTourSlide(tourSlide + 1)}>{tourSlide === 2 ? "はじめる" : "次へ"}<ChevronRight size={14} /></button></div></div>}</div></div><div className="summary-grid"><SummaryCard icon={<ShoppingBasket size={19} />} label="買い物" value={`${remainingShopping.length}件`} detail={remainingShopping[0]?.item ? `次は ${remainingShopping[0].item}` : "すべて完了"} color="teal" onClick={() => { setBoardTab("shopping"); navigate("family"); }} /><SummaryCard icon={<Utensils size={19} />} label="夕飯" value={`${statusSummary}/${familyMembers.length}人`} detail={state.dinner.menu || "メニュー未定"} color="coral" onClick={() => { setBoardTab("dinner"); navigate("family"); }} /><SummaryCard icon={<ClipboardCheck size={19} />} label="伝言" value={`${remainingTodos.length}件`} detail={remainingTodos[0]?.text || "伝言はありません"} color="purple" onClick={() => { setBoardTab("messages"); navigate("family"); }} /><SummaryCard icon={<ShieldCheck size={19} />} label="防災" value={`${stockAlerts.length}件注意`} detail={stockAlerts[0]?.name || "期限は余裕あり"} color="amber" onClick={() => { setBoardTab("stock"); navigate("family"); }} /></div><div className="home-columns"><div className="panel next-panel"><div className="section-heading"><div><p className="eyebrow">NEXT UP</p><h2>今日の小さなチェック</h2></div><MoreHorizontal size={19} /></div><div className="next-list"><button onClick={() => { setBoardTab("shopping"); navigate("family"); }}><span className="next-icon teal"><ShoppingBasket size={17} /></span><span><strong>買い物</strong><small>{remainingShopping.length ? `${remainingShopping.length}件を確認` : "完了"}</small></span><ChevronRight size={16} /></button><button onClick={() => { setBoardTab("trash"); navigate("family"); }}><span className="next-icon blue"><Trash2 size={17} /></span><span><strong>ゴミ出し</strong><small>{state.trash[new Date().getDay() === 0 ? 6 : new Date().getDay() - 1]?.type || "予定を確認"}</small></span><ChevronRight size={16} /></button><button onClick={() => { setBoardTab("dinner"); navigate("family"); }}><span className="next-icon coral"><Utensils size={17} /></span><span><strong>夕飯</strong><small>{state.dinner.menu || "メニューを決める"}</small></span><ChevronRight size={16} /></button></div></div><div className="panel quote-panel"><div className="quote-mark">“</div><p>家事は見えないと増える。<br />見えると、分けられる。</p><span>かぞくハブの考え方</span><div className="quote-line" /></div></div><div className="home-footer-note"><Sparkles size={16} /><span>今日も一つ、共有できたら十分です。</span><button className="text-button" onClick={() => changeView("tools")}>ひと息ツールへ <ChevronRight size={15} /></button></div></section>;
   };
 
-  const renderSettings = () => <section className="page-section settings-page">{renderBreadcrumb()}<div className="page-title-row"><div><p className="eyebrow">SETTINGS / 好みを整える</p><h1>設定</h1><p className="page-lede">かぞくハブを、わが家のリズムに合わせます。</p></div></div><div className="settings-grid"><div className="panel"><div className="section-heading"><div><p className="eyebrow">HOUSEHOLD</p><h3>わが家の表示</h3></div><Home size={19} /></div><label className="large-label">家族の名前<input value={state.householdName} onChange={e => setState({ ...state, householdName: e.target.value })} onBlur={() => commit(state, "表示名を保存しました")} /></label><label className="large-label">ホームのひとこと<textarea value={state.message} onChange={e => setState({ ...state, message: e.target.value })} onBlur={() => commit(state, "メッセージを保存しました")} rows={3} /></label><p className="form-hint">変更は入力欄からフォーカスを外したときに保存されます。</p></div><div className="panel"><div className="section-heading"><div><p className="eyebrow">FAMILY MEMBERS</p><h3>家族の名前</h3></div><Utensils size={19} /></div><p className="form-hint member-intro">夕飯の回答者として表示される名前を変更できます。名前を変えても、これまでの回答状況は引き継がれます。</p><div className="member-name-list">{familyMembers.map((member, index) => <label className="member-name-row" key={`${member}-${index}`}><span className="member-avatar">{(member || "家").slice(0, 1)}</span><input value={memberDrafts[index] ?? member} onChange={e => setMemberDrafts(drafts => drafts.map((draft, draftIndex) => draftIndex === index ? e.target.value : draft))} onBlur={e => renameMember(index, e.target.value)} placeholder={`家族${index + 1}`} /></label>)}</div><p className="form-hint">入力欄からフォーカスを外すと保存されます。</p></div><div className="panel"><div className="section-heading"><div><p className="eyebrow">APPEARANCE</p><h3>見た目と保存</h3></div><SlidersHorizontalIcon /></div><div className="setting-row"><div><strong>表示テーマ</strong><small>夜は目にやさしい色へ</small></div><button className="theme-choice" onClick={toggleTheme}>{theme === "dark" ? <Moon size={17} /> : <Sun size={17} />}{theme === "dark" ? "ダーク" : "ライト"}</button></div><div className="setting-row"><div><strong>データ同期</strong><small>{syncText}</small></div><span className="sync-badge"><span className="sync-dot" />自動保存</span></div><div className="setting-row danger-setting"><div><strong>データを初期化</strong><small>サンプルデータに戻します</small></div><button className="button button-danger" onClick={() => setModal("reset")}><RefreshCw size={15} />初期化</button></div></div></div><div className="settings-footnote"><CircleHelp size={16} /><span>家族で共有したいときは、同じアプリURLを開いてください。外部のマスターキーは使用していません。</span></div></section>;
+  const renderSettings = () => <section className="page-section settings-page">{renderBreadcrumb()}<div className="page-title-row"><div><p className="eyebrow">SETTINGS / 家族をつなぐ</p><h1>設定</h1><p className="page-lede">アカウントと家族グループを、わが家の使い方に合わせます。</p></div></div><div className="settings-grid"><div className="panel"><div className="section-heading"><div><p className="eyebrow">ACCOUNT</p><h3>あなたのアカウント</h3></div><Home size={19} /></div><div className="account-card"><span className="account-avatar">{(currentMemberName || "家").slice(0, 1)}</span><div><strong>{currentMemberName}</strong><small>{auth.user?.email || "Manusアカウントでログイン中"}</small></div></div><button className="button button-ghost account-logout" onClick={() => void auth.logout().catch(error => toast.error(error instanceof Error ? error.message : "ログアウトできませんでした"))}>この端末からログアウト</button></div><div className="panel"><div className="section-heading"><div><p className="eyebrow">FAMILY GROUP</p><h3>共有する家族</h3></div><Users size={19} /></div><label className="large-label">表示する家族<select value={selectedGroup.groupId} onChange={e => { const nextId = Number(e.target.value); setActiveGroupId(nextId); localStorage.setItem(ACTIVE_GROUP_KEY, String(nextId)); }}><>{(groupsQuery.data as FamilyGroup[]).map(group => <option key={group.groupId} value={group.groupId}>{group.groupName}</option>)}</></select></label><div className="group-code-box"><div><span>家族への参加コード</span><strong>{selectedGroup.inviteCode}</strong></div><button className="button button-ghost" onClick={() => { navigator.clipboard?.writeText(selectedGroup.inviteCode); toast.success("参加コードをコピーしました"); }}><Save size={15} />コピー</button></div><p className="form-hint">家族の端末でログイン後、このコードを入力すると同じ共有スペースへ参加できます。</p></div><div className="panel"><div className="section-heading"><div><p className="eyebrow">YOUR PROFILE</p><h3>あなたの表示名</h3></div><Utensils size={19} /></div><label className="large-label">家族ボードで表示する名前<input value={profileDraft} onChange={e => setProfileDraft(e.target.value)} onBlur={saveProfileName} placeholder="例：お母さん" /></label><p className="form-hint">表示名はあなたのアカウントにだけ紐づきます。変更後も夕飯の回答履歴は引き継がれます。</p><div className="member-name-list">{familyMemberRecords.map(member => <div className="member-name-row readonly" key={member.openId}><span className="member-avatar">{(member.displayName || "家").slice(0, 1)}</span><span><strong>{member.displayName}</strong>{member.openId === auth.user?.openId && <small>あなた</small>}</span><span className="member-role">{member.role === "owner" ? "管理者" : "メンバー"}</span></div>)}</div></div><div className="panel"><div className="section-heading"><div><p className="eyebrow">APPEARANCE</p><h3>見た目と保存</h3></div><SlidersHorizontalIcon /></div><div className="setting-row"><div><strong>表示テーマ</strong><small>夜は目にやさしい色へ</small></div><button className="theme-choice" onClick={toggleTheme}>{theme === "dark" ? <Moon size={17} /> : <Sun size={17} />}{theme === "dark" ? "ダーク" : "ライト"}</button></div><div className="setting-row"><div><strong>データ同期</strong><small>{syncText}</small></div><span className="sync-badge"><span className="sync-dot" />家族ごとに自動保存</span></div><div className="setting-row danger-setting"><div><strong>この家族のデータを初期化</strong><small>共有中のメモ・予定・備蓄がサンプルデータに戻ります</small></div><button className="button button-danger" onClick={() => setModal("reset")}><RefreshCw size={15} />初期化</button></div></div></div><div className="settings-footnote"><CircleHelp size={16} /><span>家族の端末ごとに自分のアカウントでログインしてください。共有データは選択中の家族グループにだけ保存されます。</span></div></section>;
+
+  if (auth.loading) return <AuthLoading text="アカウントを確認しています…" />;
+  if (!auth.isAuthenticated) return <AuthScreen onLogin={() => startLogin()} />;
+  if (groupsQuery.isLoading) return <AuthLoading text="家族グループを読み込んでいます…" />;
+  if (groupsQuery.isError) return <AuthScreen title="家族グループを読み込めません" description="通信状態を確認して、もう一度お試しください。" onLogin={() => groupsQuery.refetch()} actionLabel="再読み込み" />;
+  if (!groupsQuery.data?.length) return <FamilySetup accountName={auth.user?.name ?? ""} onComplete={groupId => { setActiveGroupId(groupId); localStorage.setItem(ACTIVE_GROUP_KEY, String(groupId)); void groupsQuery.refetch(); }} />;
+  if (!activeGroup) return <AuthLoading text="選択中の家族を切り替えています…" />;
+
+  const selectedGroup = activeGroup;
 
   const currentTitle = view === "home" ? "今日" : view === "family" ? "家族ボード" : view === "tools" ? "ひと息ツール" : "設定";
 
-  return <div className="app-frame"><div className={`sidebar-overlay ${sidebarOpen ? "visible" : ""}`} onClick={() => setSidebarOpen(false)} /><aside className={`sidebar ${sidebarOpen ? "open" : ""}`}><div className="brand-block"><div className="brand-mark"><Home size={18} /></div><div><strong>かぞくハブ</strong><span>everyday, together</span></div><button className="mobile-close icon-button" onClick={() => setSidebarOpen(false)}><X size={18} /></button></div><div className="household-chip"><div className="avatar-stack">{familyMembers.slice(0, 3).map((member, index) => <span key={`${member}-${index}`}>{(member || "家").slice(0, 1)}</span>)}</div><div><strong>{state.householdName}</strong><small>{familyMembers.length}人のメンバー</small></div><button className="icon-button"><MoreHorizontal size={16} /></button></div><nav className="main-nav"><span className="nav-label">MENU</span>{navItems.map(item => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => changeView(item.id)}>{item.icon}<span><strong>{item.label}</strong><small>{item.note}</small></span>{view === item.id && <span className="nav-active-dot" />}</button>)}</nav><div className="sidebar-bottom"><div className="mini-tip"><Sparkles size={15} /><span>今日のヒント<small>完璧より、共有。</small></span></div><button className="sidebar-help"><CircleHelp size={15} />使い方を見る</button><div className="sidebar-meta"><span>SYNC STATUS</span><strong><span className="sync-dot" />{syncText}</strong></div></div></aside><main className="main-area"><header className="topbar"><button className="mobile-menu icon-button" onClick={() => setSidebarOpen(true)}><Menu size={20} /></button><div className="topbar-context"><span className="topbar-kicker">{currentTitle.toUpperCase()}</span><span className="topbar-divider">/</span><span>{formatDate()}</span></div><div className="topbar-actions"><button className="icon-button search-button" onClick={() => { setModal("quick"); setQuickType("message"); }} title="クイック追加"><Search size={18} /></button><button className="icon-button" onClick={() => toast("新しい通知はありません")} title="通知"><Bell size={18} /></button><button className="theme-top-button" onClick={toggleTheme}>{theme === "dark" ? <Moon size={16} /> : <Sun size={16} />}<span>{theme === "dark" ? "夜" : "昼"}</span></button></div></header><div className="content-wrap">{view === "home" && renderHome()}{view === "family" && renderFamily()}{view === "tools" && renderTools()}{view === "settings" && renderSettings()}</div></main>{modal === "quick" && <Modal title="クイック追加" subtitle="思いついた瞬間に、家族の共有スペースへ。" onClose={() => setModal(null)}><label className="modal-select">追加するもの<select value={quickType} onChange={e => setQuickType(e.target.value as QuickType)}><option value="shopping">買い物</option><option value="message">伝言</option><option value="dinner">夕飯リクエスト</option><option value="stock">防災備蓄</option></select></label>{quickType === "shopping" && <div className="modal-fields"><label>店名<input value={shoppingDraft.store} onChange={e => setShoppingDraft({ ...shoppingDraft, store: e.target.value })} /></label><label>買うもの<input autoFocus value={shoppingDraft.item} onChange={e => setShoppingDraft({ ...shoppingDraft, item: e.target.value })} placeholder="例：ヨーグルト" /></label><label>特売日メモ<input value={shoppingDraft.sale} onChange={e => setShoppingDraft({ ...shoppingDraft, sale: e.target.value })} placeholder="任意" /></label></div>}{quickType === "message" && <label>伝言<input autoFocus value={messageDraft} onChange={e => setMessageDraft(e.target.value)} placeholder="例：宅配便が届いたら冷蔵庫へ" /></label>}{quickType === "dinner" && <label>食べたいもの<input autoFocus value={requestDraft} onChange={e => setRequestDraft(e.target.value)} placeholder="例：カレーが食べたい" /></label>}{quickType === "stock" && <div className="modal-fields"><label>品名<input autoFocus value={stockDraft.name} onChange={e => setStockDraft({ ...stockDraft, name: e.target.value })} placeholder="保存水 2L" /></label><label>賞味期限<input type="date" value={stockDraft.date} onChange={e => setStockDraft({ ...stockDraft, date: e.target.value })} /></label></div>}<div className="modal-actions"><button className="button button-ghost" onClick={() => setModal(null)}>キャンセル</button><button className="button button-primary" onClick={addQuickItem}><Plus size={16} />追加する</button></div></Modal>}{modal === "reset" && <Modal title="データを初期化しますか？" subtitle="現在の家族メモ・予定・備蓄がサンプルデータに戻ります。" onClose={() => setModal(null)}><div className="warning-box"><AlertTriangle size={20} /><span>この操作は元に戻せません。必要なメモがある場合は先に控えてください。</span></div><div className="modal-actions"><button className="button button-ghost" onClick={() => setModal(null)}>やめる</button><button className="button button-danger" onClick={resetAll}><RefreshCw size={16} />初期化する</button></div></Modal>}<Toaster position="bottom-right" richColors /></div>;
+  return <div className="app-frame"><div className={`sidebar-overlay ${sidebarOpen ? "visible" : ""}`} onClick={() => setSidebarOpen(false)} /><aside className={`sidebar ${sidebarOpen ? "open" : ""}`}><div className="brand-block"><div className="brand-mark"><Home size={18} /></div><div><strong>かぞくハブ</strong><span>everyday, together</span></div><button className="mobile-close icon-button" onClick={() => setSidebarOpen(false)}><X size={18} /></button></div><div className="household-chip"><div className="avatar-stack">{familyMembers.slice(0, 3).map((member, index) => <span key={`${member}-${index}`}>{(member || "家").slice(0, 1)}</span>)}</div><div><strong>{selectedGroup.groupName}</strong><small>{familyMembers.length}人のメンバー</small></div><button className="icon-button"><MoreHorizontal size={16} /></button></div><nav className="main-nav"><span className="nav-label">MENU</span>{navItems.map(item => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => changeView(item.id)}>{item.icon}<span><strong>{item.label}</strong><small>{item.note}</small></span>{view === item.id && <span className="nav-active-dot" />}</button>)}</nav><div className="sidebar-bottom"><div className="mini-tip"><Sparkles size={15} /><span>今日のヒント<small>完璧より、共有。</small></span></div><button className="sidebar-help"><CircleHelp size={15} />使い方を見る</button><div className="sidebar-meta"><span>SYNC STATUS</span><strong><span className="sync-dot" />{syncText}</strong></div></div></aside><main className="main-area"><header className="topbar"><button className="mobile-menu icon-button" onClick={() => setSidebarOpen(true)}><Menu size={20} /></button><div className="topbar-context"><span className="topbar-kicker">{currentTitle.toUpperCase()}</span><span className="topbar-divider">/</span><span>{formatDate()}</span></div><div className="topbar-actions"><button className="icon-button search-button" onClick={() => { setModal("quick"); setQuickType("message"); }} title="クイック追加"><Search size={18} /></button><button className="icon-button" onClick={() => toast("新しい通知はありません")} title="通知"><Bell size={18} /></button><button className="theme-top-button" onClick={toggleTheme}>{theme === "dark" ? <Moon size={16} /> : <Sun size={16} />}<span>{theme === "dark" ? "夜" : "昼"}</span></button></div></header><div className="content-wrap">{view === "home" && renderHome()}{view === "family" && renderFamily()}{view === "tools" && renderTools()}{view === "settings" && renderSettings()}</div></main>{modal === "quick" && <Modal title="クイック追加" subtitle="思いついた瞬間に、家族の共有スペースへ。" onClose={() => setModal(null)}><label className="modal-select">追加するもの<select value={quickType} onChange={e => setQuickType(e.target.value as QuickType)}><option value="shopping">買い物</option><option value="message">伝言</option><option value="dinner">夕飯リクエスト</option><option value="stock">防災備蓄</option></select></label>{quickType === "shopping" && <div className="modal-fields"><label>店名<input value={shoppingDraft.store} onChange={e => setShoppingDraft({ ...shoppingDraft, store: e.target.value })} /></label><label>買うもの<input autoFocus value={shoppingDraft.item} onChange={e => setShoppingDraft({ ...shoppingDraft, item: e.target.value })} placeholder="例：ヨーグルト" /></label><label>特売日メモ<input value={shoppingDraft.sale} onChange={e => setShoppingDraft({ ...shoppingDraft, sale: e.target.value })} placeholder="任意" /></label></div>}{quickType === "message" && <label>伝言<input autoFocus value={messageDraft} onChange={e => setMessageDraft(e.target.value)} placeholder="例：宅配便が届いたら冷蔵庫へ" /></label>}{quickType === "dinner" && <label>食べたいもの<input autoFocus value={requestDraft} onChange={e => setRequestDraft(e.target.value)} placeholder="例：カレーが食べたい" /></label>}{quickType === "stock" && <div className="modal-fields"><label>品名<input autoFocus value={stockDraft.name} onChange={e => setStockDraft({ ...stockDraft, name: e.target.value })} placeholder="保存水 2L" /></label><label>賞味期限<input type="date" value={stockDraft.date} onChange={e => setStockDraft({ ...stockDraft, date: e.target.value })} /></label></div>}<div className="modal-actions"><button className="button button-ghost" onClick={() => setModal(null)}>キャンセル</button><button className="button button-primary" onClick={addQuickItem}><Plus size={16} />追加する</button></div></Modal>}{modal === "reset" && <Modal title="データを初期化しますか？" subtitle="現在の家族メモ・予定・備蓄がサンプルデータに戻ります。" onClose={() => setModal(null)}><div className="warning-box"><AlertTriangle size={20} /><span>この操作は元に戻せません。必要なメモがある場合は先に控えてください。</span></div><div className="modal-actions"><button className="button button-ghost" onClick={() => setModal(null)}>やめる</button><button className="button button-danger" onClick={resetAll}><RefreshCw size={16} />初期化する</button></div></Modal>}<Toaster position="bottom-right" richColors /></div>;
+}
+
+function AuthLoading({ text }: { text: string }) {
+  return <div className="auth-screen"><div className="auth-card loading-card"><div className="brand-mark"><Home size={19} /></div><span className="eyebrow">KAZOKU HUB</span><h1>{text}</h1><div className="loading-bar" /></div></div>;
+}
+
+function AuthScreen({ title = "家族で使うにはログイン", description = "家族それぞれのアカウントでログインすると、夕飯の回答や共有メモを自分の端末から更新できます。", actionLabel = "Manusでログイン", onLogin }: { title?: string; description?: string; actionLabel?: string; onLogin: () => void | Promise<unknown> }) {
+  return <div className="auth-screen"><div className="auth-card"><div className="auth-illustration"><div className="brand-mark"><Home size={22} /></div><span className="auth-orbit orbit-one" /><span className="auth-orbit orbit-two" /></div><p className="eyebrow">KAZOKU HUB / FAMILY SPACE</p><h1>{title}</h1><p className="auth-description">{description}</p><button className="button button-primary auth-button" onClick={() => void onLogin()}>{actionLabel}<ChevronRight size={16} /></button><p className="auth-note">ログイン後、家族グループを作成するか、招待コードで参加できます。</p></div></div>;
+}
+
+function FamilySetup({ accountName, onComplete }: { accountName: string; onComplete: (groupId: number) => void }) {
+  const [mode, setMode] = useState<"create" | "join">("create");
+  const [familyName, setFamilyName] = useState("わが家");
+  const [displayName, setDisplayName] = useState(accountName);
+  const [inviteCode, setInviteCode] = useState("");
+  const createMutation = trpc.family.create.useMutation();
+  const joinMutation = trpc.family.join.useMutation();
+  const pending = createMutation.isPending || joinMutation.isPending;
+
+  const submit = () => {
+    if (!displayName.trim()) return toast.error("あなたの表示名を入力してください");
+    if (mode === "create") {
+      if (!familyName.trim()) return toast.error("家族名を入力してください");
+      createMutation.mutate({ name: familyName, displayName }, { onSuccess: result => { toast.success("家族グループを作成しました"); onComplete(result.groupId); }, onError: error => toast.error(error.message) });
+    } else {
+      if (!inviteCode.trim()) return toast.error("招待コードを入力してください");
+      joinMutation.mutate({ inviteCode, displayName }, { onSuccess: result => { toast.success("家族グループに参加しました"); onComplete(result.groupId); }, onError: error => toast.error(error.message) });
+    }
+  };
+
+  return <div className="auth-screen"><div className="auth-card setup-card"><div className="auth-illustration compact"><div className="brand-mark"><Users size={22} /></div></div><p className="eyebrow">ONE FAMILY, MANY DEVICES</p><h1>家族の共有スペースを作る</h1><p className="auth-description">この端末のアカウントを家族グループへつなぎます。作成者は、表示された参加コードを家族に共有してください。</p><div className="setup-mode"><button className={mode === "create" ? "active" : ""} onClick={() => setMode("create")}>新しく作る</button><button className={mode === "join" ? "active" : ""} onClick={() => setMode("join")}>招待コードで参加</button></div><div className="setup-fields"><label>あなたの表示名<input value={displayName} onChange={e => setDisplayName(e.target.value)} placeholder="例：お母さん" /></label>{mode === "create" ? <label>家族グループ名<input value={familyName} onChange={e => setFamilyName(e.target.value)} placeholder="例：わが家" /></label> : <label>招待コード<input value={inviteCode} onChange={e => setInviteCode(e.target.value.toUpperCase())} placeholder="例：A1B2C3D4" maxLength={12} /></label>}</div><button className="button button-primary auth-button" onClick={submit} disabled={pending}>{pending ? "準備しています…" : mode === "create" ? "家族グループを作成" : "家族に参加する"}<ChevronRight size={16} /></button><p className="auth-note">あとから設定画面で、表示名の変更や別の家族グループへの切り替えができます。</p></div></div>;
 }
 
 function CircleCheck() {

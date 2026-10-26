@@ -216,3 +216,41 @@ h3 { font-size: 16px; letter-spacing: -.035em; }
 .instruction-row strong { color: var(--paper); }
 .copy-instructions { margin-top: 10px; }
 @media (max-width: 760px) { .change-table-head { display: none; } .change-row { grid-template-columns: 1fr 1fr 1fr 28px; gap: 6px; } .change-row label span { display: block; } .change-row .payer-name { grid-column: span 3; } .change-row > strong { grid-column: span 3; } .change-total-strip { grid-template-columns: 1fr; } }
+
+.auth-screen { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: radial-gradient(circle at 20% 15%, var(--teal-soft), transparent 32%), var(--paper); }
+.auth-card { width: min(100%, 500px); background: var(--surface); border: 1px solid var(--line); border-radius: 26px; padding: 38px; box-shadow: var(--shadow); text-align: center; animation: rise .35s ease-out; }
+.auth-card h1 { font-size: clamp(27px, 5vw, 39px); margin-top: 12px; }
+.auth-description { color: var(--ink-soft); font-size: 13px; line-height: 1.8; margin-top: 14px; }
+.auth-note { color: var(--ink-soft); font-size: 10px; line-height: 1.7; margin-top: 16px; }
+.auth-button { width: 100%; margin-top: 24px; padding: 13px 16px; }
+.auth-illustration { height: 96px; position: relative; display: grid; place-items: center; margin-bottom: 21px; }
+.auth-illustration.compact { height: 72px; margin-bottom: 14px; }
+.auth-illustration .brand-mark { width: 54px; height: 54px; border-radius: 17px; z-index: 1; }
+.auth-orbit { position: absolute; border: 1px solid color-mix(in srgb, var(--teal) 35%, transparent); border-radius: 50%; width: 92px; height: 42px; transform: rotate(24deg); }
+.auth-orbit.orbit-two { width: 145px; height: 62px; transform: rotate(-20deg); opacity: .55; }
+.loading-card { display: flex; flex-direction: column; align-items: center; gap: 13px; }
+.loading-card h1 { font-size: 20px; }
+.loading-bar { width: 150px; height: 4px; border-radius: 10px; background: linear-gradient(90deg, transparent, var(--teal), transparent); animation: loading 1.4s ease-in-out infinite; }
+@keyframes loading { 0% { transform: translateX(-35px); opacity: .25; } 50% { opacity: 1; } 100% { transform: translateX(35px); opacity: .25; } }
+.setup-card { max-width: 560px; }
+.setup-mode { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; background: var(--paper); border-radius: 11px; padding: 4px; margin-top: 23px; }
+.setup-mode button { border: 0; border-radius: 8px; background: transparent; color: var(--ink-soft); padding: 10px 8px; font-size: 11px; font-weight: 800; }
+.setup-mode button.active { color: var(--teal-deep); background: var(--surface); box-shadow: var(--shadow-small); }
+.setup-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 17px; text-align: left; }
+.setup-fields label, .large-label { display: flex; flex-direction: column; gap: 7px; color: var(--ink-soft); font-size: 10px; font-weight: 800; }
+.account-card { display: flex; align-items: center; gap: 10px; background: var(--paper); border: 1px solid var(--line); border-radius: 13px; padding: 12px; }
+.account-avatar { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 50%; color: var(--teal-deep); background: var(--teal-soft); font-weight: 900; }
+.account-card > div { display: flex; flex-direction: column; text-align: left; }
+.account-card strong { font-size: 12px; }
+.account-card small { color: var(--ink-soft); font-size: 10px; margin-top: 3px; }
+.account-logout { margin-top: 12px; }
+.group-code-box { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px; border-radius: 13px; background: var(--teal-soft); margin-top: 17px; }
+.group-code-box > div { display: flex; flex-direction: column; align-items: flex-start; }
+.group-code-box span { color: var(--teal-deep); font-size: 10px; }
+.group-code-box strong { color: var(--teal-deep); font-size: 23px; letter-spacing: .16em; margin-top: 4px; }
+.member-name-row.readonly { min-height: 43px; padding: 7px 0; }
+.member-name-row.readonly > span:nth-child(2) { display: flex; flex-direction: column; gap: 2px; margin-right: auto; }
+.member-name-row.readonly strong { font-size: 12px; }
+.member-name-row.readonly small { color: var(--teal-deep); font-size: 9px; }
+.member-role { color: var(--ink-soft); font-size: 10px; }
+@media (max-width: 560px) { .auth-card { padding: 28px 20px; border-radius: 20px; }.setup-fields { grid-template-columns: 1fr; }.group-code-box { align-items: flex-start; flex-direction: column; }.group-code-box .button { width: 100%; } }
