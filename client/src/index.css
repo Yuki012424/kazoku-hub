@@ -254,3 +254,26 @@ h3 { font-size: 16px; letter-spacing: -.035em; }
 .member-name-row.readonly small { color: var(--teal-deep); font-size: 9px; }
 .member-role { color: var(--ink-soft); font-size: 10px; }
 @media (max-width: 560px) { .auth-card { padding: 28px 20px; border-radius: 20px; }.setup-fields { grid-template-columns: 1fr; }.group-code-box { align-items: flex-start; flex-direction: column; }.group-code-box .button { width: 100%; } }
+
+.sidebar-help { width: 100%; display: flex; align-items: center; gap: 7px; border: 0; background: transparent; color: var(--ink-soft); padding: 9px 2px; text-align: left; font-size: 10px; cursor: pointer; }
+.sidebar-help svg:last-child { margin-left: auto; opacity: .55; }
+.sidebar-help:hover { color: var(--teal-deep); }
+.member-modal-list { display: flex; flex-direction: column; gap: 8px; }
+.member-modal-row { display: flex; align-items: center; gap: 11px; padding: 11px 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); }
+.member-modal-row > div { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.member-modal-row strong { font-size: 12px; }
+.member-modal-row small { color: var(--ink-soft); font-size: 10px; }
+.member-modal-avatar { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 50%; color: var(--teal-deep); background: var(--teal-soft); font-size: 11px; font-weight: 900; }
+.member-modal-row:nth-child(2) .member-modal-avatar { color: var(--coral); background: var(--coral-soft); }
+.member-modal-row:nth-child(3) .member-modal-avatar { color: var(--purple); background: var(--purple-soft); }
+.member-online { width: 8px; height: 8px; margin-left: auto; border-radius: 50%; background: var(--line); }
+.member-online.current { background: var(--teal); box-shadow: 0 0 0 4px var(--teal-soft); }
+.modal-empty { color: var(--ink-soft); font-size: 11px; padding: 14px 0; text-align: center; }
+.modal-tip { display: flex; align-items: flex-start; gap: 8px; margin-top: 15px; padding: 11px 12px; border-radius: 10px; color: var(--teal-deep); background: var(--teal-soft); font-size: 10px; line-height: 1.6; }
+.modal-tip svg { flex: 0 0 auto; margin-top: 1px; }
+.help-list { display: flex; flex-direction: column; gap: 4px; }
+.help-item { display: flex; gap: 11px; padding: 11px 0; border-bottom: 1px solid var(--line); }
+.help-item:last-child { border-bottom: 0; }
+.help-number { flex: 0 0 auto; color: var(--teal-deep); font-size: 10px; font-weight: 900; letter-spacing: .1em; padding-top: 2px; }
+.help-item strong { display: block; font-size: 12px; }
+.help-item p { color: var(--ink-soft); font-size: 10px; line-height: 1.65; margin-top: 4px; }
