@@ -277,3 +277,5 @@ h3 { font-size: 16px; letter-spacing: -.035em; }
 .help-number { flex: 0 0 auto; color: var(--teal-deep); font-size: 10px; font-weight: 900; letter-spacing: .1em; padding-top: 2px; }
 .help-item strong { display: block; font-size: 12px; }
 .help-item p { color: var(--ink-soft); font-size: 10px; line-height: 1.65; margin-top: 4px; }
+
+.theme-choice.push-enabled { color: var(--teal-deep); background: var(--teal-soft); border-color: color-mix(in srgb, var(--teal) 35%, var(--line)); }

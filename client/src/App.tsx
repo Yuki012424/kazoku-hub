@@ -182,6 +182,13 @@ function uid(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
+function urlBase64ToUint8Array(value: string) {
+  const padding = "=".repeat((4 - value.length % 4) % 4);
+  const base64 = (value + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(base64);
+  return Uint8Array.from([...raw].map(char => char.charCodeAt(0)));
+}
+
 function AppShell() {
   const { theme, toggleTheme } = useTheme();
   const auth = useAuth();
@@ -237,7 +244,28 @@ function AppShell() {
   const noiseRef = useRef<OscillatorNode | null>(null);
   const saveMutation = trpc.hub.saveState.useMutation();
   const profileMutation = trpc.family.updateProfile.useMutation();
+  const pushKeyQuery = trpc.push.publicKey.useQuery(undefined, { enabled: Boolean(auth.isAuthenticated && activeGroupId), retry: false });
+  const pushSubscribeMutation = trpc.push.subscribe.useMutation();
+  const pushUnsubscribeMutation = trpc.push.unsubscribe.useMutation();
+  const [pushStatus, setPushStatus] = useState<"off" | "on" | "denied" | "unsupported">("off");
   const cloudState = trpc.hub.getState.useQuery({ groupId: activeGroupId ?? 0 }, { enabled: Boolean(auth.isAuthenticated && activeGroupId), retry: false });
+
+  useEffect(() => {
+    if (!("serviceWorker" in navigator)) {
+      setPushStatus("unsupported");
+      return;
+    }
+    void navigator.serviceWorker.register("/sw.js").catch(() => setPushStatus("unsupported"));
+  }, []);
+
+  useEffect(() => {
+    if (!activeGroupId) return;
+    if (!("Notification" in window) || !("serviceWorker" in navigator)) {
+      setPushStatus("unsupported");
+      return;
+    }
+    setPushStatus(localStorage.getItem(`kazoku-hub-push-${activeGroupId}`) === "on" ? "on" : Notification.permission === "denied" ? "denied" : "off");
+  }, [activeGroupId]);
 
   useEffect(() => {
     if (!groupsQuery.data) return;
@@ -313,6 +341,49 @@ function AppShell() {
       onError: () => setSyncText("この端末に保存中"),
     });
     if (message) toast.success(message);
+  };
+
+  const enablePushNotifications = async () => {
+    if (!activeGroupId || !("Notification" in window) || !("serviceWorker" in navigator)) {
+      setPushStatus("unsupported");
+      return toast.error("この端末ではプッシュ通知を利用できません");
+    }
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") {
+      setPushStatus(permission === "denied" ? "denied" : "off");
+      return toast.error("通知が許可されていません。端末の設定から通知を許可してください");
+    }
+    const publicKey = pushKeyQuery.data ?? (await pushKeyQuery.refetch()).data;
+    if (!publicKey) return toast.error("通知設定を準備できませんでした。少し待って再試行してください");
+    try {
+      const registration = await navigator.serviceWorker.ready;
+      const existing = await registration.pushManager.getSubscription();
+      const subscription = existing ?? await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(publicKey) });
+      const json = subscription.toJSON();
+      if (!json.endpoint || !json.keys?.p256dh || !json.keys.auth) throw new Error("通知購読情報を取得できませんでした");
+      await pushSubscribeMutation.mutateAsync({ groupId: activeGroupId, endpoint: json.endpoint, p256dh: json.keys.p256dh, auth: json.keys.auth });
+      localStorage.setItem(`kazoku-hub-push-${activeGroupId}`, "on");
+      setPushStatus("on");
+      toast.success("家族の更新通知をオンにしました");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "通知を設定できませんでした");
+    }
+  };
+
+  const disablePushNotifications = async () => {
+    try {
+      const registration = await navigator.serviceWorker.ready;
+      const subscription = await registration.pushManager.getSubscription();
+      if (subscription) {
+        await pushUnsubscribeMutation.mutateAsync({ endpoint: subscription.endpoint });
+        await subscription.unsubscribe();
+      }
+      if (activeGroupId) localStorage.removeItem(`kazoku-hub-push-${activeGroupId}`);
+      setPushStatus("off");
+      toast.success("更新通知をオフにしました");
+    } catch {
+      toast.error("通知をオフにできませんでした");
+    }
   };
 
   const navigate = (next: View) => {
@@ -605,7 +676,7 @@ function AppShell() {
     return <section className="home-section"><div className="home-hero"><div className="hero-copy"><div className="date-stamp"><CalendarDays size={15} />{formatDate()}</div><h1>今日の家族会議を、<br /><em>30秒で。</em></h1><p>{state.message}</p><div className="hero-actions"><button className="button button-primary" onClick={() => setModal("quick")}><Plus size={16} />クイック追加</button><button className="text-button" onClick={() => changeView("family")}>家族ボードを見る <ChevronRight size={15} /></button></div></div><div className="hero-aside"><div className="sync-card"><div className="sync-dot" /><div><span>共有ステータス</span><strong>{syncText}</strong></div><button className="icon-button" onClick={() => cloudState.refetch()} title="再同期"><RefreshCw size={15} /></button></div>{!tourDismissed && <div className="tour-card"><div className="tour-top"><span className="eyebrow">FIRST LOOK / 0{tourSlide + 1}</span><button className="icon-button" onClick={dismissTour}><X size={15} /></button></div><h3>{slide[0]}</h3><p>{slide[1]}</p><div className="tour-controls"><div className="tour-dots">{[0, 1, 2].map(index => <button key={index} className={index === tourSlide ? "active" : ""} onClick={() => setTourSlide(index)} aria-label={`${index + 1}枚目`} />)}</div><button onClick={() => tourSlide === 2 ? dismissTour() : setTourSlide(tourSlide + 1)}>{tourSlide === 2 ? "はじめる" : "次へ"}<ChevronRight size={14} /></button></div></div>}</div></div><div className="summary-grid"><SummaryCard icon={<ShoppingBasket size={19} />} label="買い物" value={`${remainingShopping.length}件`} detail={remainingShopping[0]?.item ? `次は ${remainingShopping[0].item}` : "すべて完了"} color="teal" onClick={() => { setBoardTab("shopping"); navigate("family"); }} /><SummaryCard icon={<Utensils size={19} />} label="夕飯" value={`${statusSummary}/${familyMembers.length}人`} detail={state.dinner.menu || "メニュー未定"} color="coral" onClick={() => { setBoardTab("dinner"); navigate("family"); }} /><SummaryCard icon={<ClipboardCheck size={19} />} label="伝言" value={`${remainingTodos.length}件`} detail={remainingTodos[0]?.text || "伝言はありません"} color="purple" onClick={() => { setBoardTab("messages"); navigate("family"); }} /><SummaryCard icon={<ShieldCheck size={19} />} label="防災" value={`${stockAlerts.length}件注意`} detail={stockAlerts[0]?.name || "期限は余裕あり"} color="amber" onClick={() => { setBoardTab("stock"); navigate("family"); }} /></div><div className="home-columns"><div className="panel next-panel"><div className="section-heading"><div><p className="eyebrow">NEXT UP</p><h2>今日の小さなチェック</h2></div><MoreHorizontal size={19} /></div><div className="next-list"><button onClick={() => { setBoardTab("shopping"); navigate("family"); }}><span className="next-icon teal"><ShoppingBasket size={17} /></span><span><strong>買い物</strong><small>{remainingShopping.length ? `${remainingShopping.length}件を確認` : "完了"}</small></span><ChevronRight size={16} /></button><button onClick={() => { setBoardTab("trash"); navigate("family"); }}><span className="next-icon blue"><Trash2 size={17} /></span><span><strong>ゴミ出し</strong><small>{state.trash[new Date().getDay() === 0 ? 6 : new Date().getDay() - 1]?.type || "予定を確認"}</small></span><ChevronRight size={16} /></button><button onClick={() => { setBoardTab("dinner"); navigate("family"); }}><span className="next-icon coral"><Utensils size={17} /></span><span><strong>夕飯</strong><small>{state.dinner.menu || "メニューを決める"}</small></span><ChevronRight size={16} /></button></div></div><div className="panel quote-panel"><div className="quote-mark">“</div><p>家事は見えないと増える。<br />見えると、分けられる。</p><span>かぞくハブの考え方</span><div className="quote-line" /></div></div><div className="home-footer-note"><Sparkles size={16} /><span>今日も一つ、共有できたら十分です。</span><button className="text-button" onClick={() => changeView("tools")}>ひと息ツールへ <ChevronRight size={15} /></button></div></section>;
   };
 
-  const renderSettings = () => <section className="page-section settings-page">{renderBreadcrumb()}<div className="page-title-row"><div><p className="eyebrow">SETTINGS / 家族をつなぐ</p><h1>設定</h1><p className="page-lede">アカウントと家族グループを、わが家の使い方に合わせます。</p></div></div><div className="settings-grid"><div className="panel"><div className="section-heading"><div><p className="eyebrow">ACCOUNT</p><h3>あなたのアカウント</h3></div><Home size={19} /></div><div className="account-card"><span className="account-avatar">{(currentMemberName || "家").slice(0, 1)}</span><div><strong>{currentMemberName}</strong><small>{auth.user?.email || "Manusアカウントでログイン中"}</small></div></div><button className="button button-ghost account-logout" onClick={() => void auth.logout().catch(error => toast.error(error instanceof Error ? error.message : "ログアウトできませんでした"))}>この端末からログアウト</button></div><div className="panel"><div className="section-heading"><div><p className="eyebrow">FAMILY GROUP</p><h3>共有する家族</h3></div><Users size={19} /></div><label className="large-label">表示する家族<select value={selectedGroup.groupId} onChange={e => { const nextId = Number(e.target.value); setActiveGroupId(nextId); localStorage.setItem(ACTIVE_GROUP_KEY, String(nextId)); }}><>{(groupsQuery.data as FamilyGroup[]).map(group => <option key={group.groupId} value={group.groupId}>{group.groupName}</option>)}</></select></label><div className="group-code-box"><div><span>家族への参加コード</span><strong>{selectedGroup.inviteCode}</strong></div><button className="button button-ghost" onClick={() => { navigator.clipboard?.writeText(selectedGroup.inviteCode); toast.success("参加コードをコピーしました"); }}><Save size={15} />コピー</button></div><p className="form-hint">家族の端末でログイン後、このコードを入力すると同じ共有スペースへ参加できます。</p></div><div className="panel"><div className="section-heading"><div><p className="eyebrow">YOUR PROFILE</p><h3>あなたの表示名</h3></div><Utensils size={19} /></div><label className="large-label">家族ボードで表示する名前<input value={profileDraft} onChange={e => setProfileDraft(e.target.value)} onBlur={saveProfileName} placeholder="例：お母さん" /></label><p className="form-hint">表示名はあなたのアカウントにだけ紐づきます。変更後も夕飯の回答履歴は引き継がれます。</p><div className="member-name-list">{familyMemberRecords.map(member => <div className="member-name-row readonly" key={member.openId}><span className="member-avatar">{(member.displayName || "家").slice(0, 1)}</span><span><strong>{member.displayName}</strong>{member.openId === auth.user?.openId && <small>あなた</small>}</span><span className="member-role">{member.role === "owner" ? "管理者" : "メンバー"}</span></div>)}</div></div><div className="panel"><div className="section-heading"><div><p className="eyebrow">APPEARANCE</p><h3>見た目と保存</h3></div><SlidersHorizontalIcon /></div><div className="setting-row"><div><strong>表示テーマ</strong><small>夜は目にやさしい色へ</small></div><button className="theme-choice" onClick={toggleTheme}>{theme === "dark" ? <Moon size={17} /> : <Sun size={17} />}{theme === "dark" ? "ダーク" : "ライト"}</button></div><div className="setting-row"><div><strong>データ同期</strong><small>{syncText}</small></div><span className="sync-badge"><span className="sync-dot" />家族ごとに自動保存</span></div><div className="setting-row danger-setting"><div><strong>この家族のデータを初期化</strong><small>共有中のメモ・予定・備蓄がサンプルデータに戻ります</small></div><button className="button button-danger" onClick={() => setModal("reset")}><RefreshCw size={15} />初期化</button></div></div></div><div className="settings-footnote"><CircleHelp size={16} /><span>家族の端末ごとに自分のアカウントでログインしてください。共有データは選択中の家族グループにだけ保存されます。</span></div></section>;
+  const renderSettings = () => <section className="page-section settings-page">{renderBreadcrumb()}<div className="page-title-row"><div><p className="eyebrow">SETTINGS / 家族をつなぐ</p><h1>設定</h1><p className="page-lede">アカウントと家族グループを、わが家の使い方に合わせます。</p></div></div><div className="settings-grid"><div className="panel"><div className="section-heading"><div><p className="eyebrow">ACCOUNT</p><h3>あなたのアカウント</h3></div><Home size={19} /></div><div className="account-card"><span className="account-avatar">{(currentMemberName || "家").slice(0, 1)}</span><div><strong>{currentMemberName}</strong><small>{auth.user?.email || "Manusアカウントでログイン中"}</small></div></div><button className="button button-ghost account-logout" onClick={() => void auth.logout().catch(error => toast.error(error instanceof Error ? error.message : "ログアウトできませんでした"))}>この端末からログアウト</button></div><div className="panel"><div className="section-heading"><div><p className="eyebrow">FAMILY GROUP</p><h3>共有する家族</h3></div><Users size={19} /></div><label className="large-label">表示する家族<select value={selectedGroup.groupId} onChange={e => { const nextId = Number(e.target.value); setActiveGroupId(nextId); localStorage.setItem(ACTIVE_GROUP_KEY, String(nextId)); }}><>{(groupsQuery.data as FamilyGroup[]).map(group => <option key={group.groupId} value={group.groupId}>{group.groupName}</option>)}</></select></label><div className="group-code-box"><div><span>家族への参加コード</span><strong>{selectedGroup.inviteCode}</strong></div><button className="button button-ghost" onClick={() => { navigator.clipboard?.writeText(selectedGroup.inviteCode); toast.success("参加コードをコピーしました"); }}><Save size={15} />コピー</button></div><p className="form-hint">家族の端末でログイン後、このコードを入力すると同じ共有スペースへ参加できます。</p></div><div className="panel"><div className="section-heading"><div><p className="eyebrow">YOUR PROFILE</p><h3>あなたの表示名</h3></div><Utensils size={19} /></div><label className="large-label">家族ボードで表示する名前<input value={profileDraft} onChange={e => setProfileDraft(e.target.value)} onBlur={saveProfileName} placeholder="例：お母さん" /></label><p className="form-hint">表示名はあなたのアカウントにだけ紐づきます。変更後も夕飯の回答履歴は引き継がれます。</p><div className="member-name-list">{familyMemberRecords.map(member => <div className="member-name-row readonly" key={member.openId}><span className="member-avatar">{(member.displayName || "家").slice(0, 1)}</span><span><strong>{member.displayName}</strong>{member.openId === auth.user?.openId && <small>あなた</small>}</span><span className="member-role">{member.role === "owner" ? "管理者" : "メンバー"}</span></div>)}</div></div><div className="panel"><div className="section-heading"><div><p className="eyebrow">APPEARANCE</p><h3>見た目と保存</h3></div><SlidersHorizontalIcon /></div><div className="setting-row"><div><strong>表示テーマ</strong><small>夜は目にやさしい色へ</small></div><button className="theme-choice" onClick={toggleTheme}>{theme === "dark" ? <Moon size={17} /> : <Sun size={17} />}{theme === "dark" ? "ダーク" : "ライト"}</button></div><div className="setting-row"><div><strong>データ同期</strong><small>{syncText}</small></div><span className="sync-badge"><span className="sync-dot" />家族ごとに自動保存</span></div><div className="setting-row"><div><strong>家族の更新通知</strong><small>{pushStatus === "on" ? "家族の変更をこの端末へ通知します" : pushStatus === "denied" ? "端末の設定で通知を許可してください" : pushStatus === "unsupported" ? "この端末では利用できません" : "家族が項目を追加・更新したら知らせます"}</small></div><button className={`theme-choice ${pushStatus === "on" ? "push-enabled" : ""}`} onClick={() => pushStatus === "on" ? void disablePushNotifications() : void enablePushNotifications()} disabled={pushStatus === "unsupported"}>{pushStatus === "on" ? "通知をオフ" : "通知をオン"}</button></div><div className="setting-row danger-setting"><div><strong>この家族のデータを初期化</strong><small>共有中のメモ・予定・備蓄がサンプルデータに戻ります</small></div><button className="button button-danger" onClick={() => setModal("reset")}><RefreshCw size={15} />初期化</button></div></div></div><div className="settings-footnote"><CircleHelp size={16} /><span>家族の端末ごとに自分のアカウントでログインしてください。共有データは選択中の家族グループにだけ保存されます。</span></div></section>;
 
   if (auth.loading) return <AuthLoading text="アカウントを確認しています…" />;
   if (!auth.isAuthenticated) return <AuthScreen onLogin={() => startLogin()} />;

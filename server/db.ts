@@ -1,8 +1,9 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
-import { familyGroups, familyHubState, familyMemberships, InsertFamilyHubState, InsertUser, users } from "../drizzle/schema";
+import { familyGroups, familyHubState, familyMemberships, InsertFamilyHubState, InsertUser, pushKeys, pushSubscriptions, users } from "../drizzle/schema";
 import { ENV } from './_core/env';
 import { randomBytes } from "node:crypto";
+import webpush from "web-push";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -163,4 +164,37 @@ export async function saveFamilyHubState(groupId: number, payload: string): Prom
   await db.insert(familyHubState).values(values).onDuplicateKeyUpdate({
     set: { payload, updatedAt: new Date() },
   });
+}
+
+export async function getOrCreatePushKeys() {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+  const existing = await db.select().from(pushKeys).where(eq(pushKeys.id, 1)).limit(1);
+  if (existing[0]) return existing[0];
+  const generated = webpush.generateVAPIDKeys();
+  await db.insert(pushKeys).values({ id: 1, publicKey: generated.publicKey, privateKey: generated.privateKey });
+  return { id: 1, publicKey: generated.publicKey, privateKey: generated.privateKey };
+}
+
+export async function savePushSubscription(groupId: number, userOpenId: string, subscription: { endpoint: string; p256dh: string; auth: string }) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+  await db.insert(pushSubscriptions).values({ groupId, userOpenId, ...subscription }).onDuplicateKeyUpdate({
+    set: { groupId, userOpenId, p256dh: subscription.p256dh, auth: subscription.auth, updatedAt: new Date() },
+  });
+}
+
+export async function removePushSubscription(endpoint: string) {
+  const db = await getDb();
+  if (!db) return;
+  await db.delete(pushSubscriptions).where(eq(pushSubscriptions.endpoint, endpoint));
+}
+
+export async function getGroupPushSubscriptions(groupId: number, excludeOpenId?: string) {
+  const db = await getDb();
+  if (!db) return [];
+  const conditions = excludeOpenId
+    ? and(eq(pushSubscriptions.groupId, groupId), ne(pushSubscriptions.userOpenId, excludeOpenId))
+    : eq(pushSubscriptions.groupId, groupId);
+  return db.select().from(pushSubscriptions).where(conditions);
 }

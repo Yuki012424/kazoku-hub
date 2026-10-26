@@ -38,9 +38,32 @@ export const familyHubState = mysqlTable("family_hub_state", {
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
 
+export const pushSubscriptions = mysqlTable("push_subscriptions", {
+  id: int("id").autoincrement().primaryKey(),
+  groupId: int("groupId").notNull(),
+  userOpenId: varchar("userOpenId", { length: 64 }).notNull(),
+  endpoint: varchar("endpoint", { length: 512 }).notNull(),
+  p256dh: text("p256dh").notNull(),
+  auth: text("auth").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, table => ({
+  endpointUnique: uniqueIndex("push_subscriptions_endpoint_unique").on(table.endpoint),
+}));
+
+export const pushKeys = mysqlTable("push_keys", {
+  id: int("id").primaryKey().notNull(),
+  publicKey: text("publicKey").notNull(),
+  privateKey: text("privateKey").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 export type FamilyGroup = typeof familyGroups.$inferSelect;
 export type FamilyMembership = typeof familyMemberships.$inferSelect;
 export type FamilyHubState = typeof familyHubState.$inferSelect;
 export type InsertFamilyHubState = typeof familyHubState.$inferInsert;
+export type PushSubscription = typeof pushSubscriptions.$inferSelect;
+export type InsertPushSubscription = typeof pushSubscriptions.$inferInsert;
+export type PushKeys = typeof pushKeys.$inferSelect;
