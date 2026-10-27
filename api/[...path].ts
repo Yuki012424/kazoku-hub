@@ -7,7 +7,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (path === "/api/platform/config.js") {
     return res.status(200).setHeader("Cache-Control", "no-store").setHeader("Content-Type", "application/javascript; charset=utf-8").send(publicPlatformScript());
   }
-  const { createApp } = await import("../server/_core/index");
-  const app = await createApp({ includeStatic: false });
+  const { createApp } = await import("../server/_core/app");
+  const app = createApp();
   return app(req, res);
 }
