@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { createServer } from "http";
-import { serveStatic, setupVite } from "./vite";
-import { createApp as createApiApp } from "./app";
+import { serveStatic, setupVite } from "./vite.js";
+import { createApp as createApiApp } from "./app.js";
 
 export async function createApp(options: { includeStatic?: boolean } = {}) {
   const app = createApiApp();

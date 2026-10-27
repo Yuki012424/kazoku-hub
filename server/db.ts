@@ -1,7 +1,7 @@
 import { and, eq, ne } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
-import { familyGroups, familyHubState, familyMemberships, InsertFamilyHubState, InsertUser, pushKeys, pushSubscriptions, users } from "../drizzle/schema";
-import { ENV } from './_core/env';
+import { familyGroups, familyHubState, familyMemberships, InsertFamilyHubState, InsertUser, pushKeys, pushSubscriptions, users } from "../drizzle/schema.js";
+import { ENV } from './_core/env.js';
 import { randomBytes } from "node:crypto";
 import webpush from "web-push";
 

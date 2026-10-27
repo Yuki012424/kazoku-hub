@@ -1,9 +1,9 @@
 import express from "express";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
-import { registerOAuthRoutes } from "./oauth";
-import { publicPlatformScript } from "./publicConfig";
-import { appRouter } from "../routers";
-import { createContext } from "./context";
+import { registerOAuthRoutes } from "./oauth.js";
+import { publicPlatformScript } from "./publicConfig.js";
+import { appRouter } from "../routers.js";
+import { createContext } from "./context.js";
 
 export function createApp() {
   const app = express();

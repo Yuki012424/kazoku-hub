@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { publicPlatformConfig, publicPlatformScript } from "./_core/publicConfig";
-import { getSessionCookieOptions } from "./_core/cookies";
-import { sdk } from "./_core/sdk";
-import { listLLMModels } from "./_core/llm";
-import { generateImage } from "./_core/imageGeneration";
-import { COOKIE_NAME } from "../shared/const";
+import { publicPlatformConfig, publicPlatformScript } from "./_core/publicConfig.js";
+import { getSessionCookieOptions } from "./_core/cookies.js";
+import { sdk } from "./_core/sdk.js";
+import { listLLMModels } from "./_core/llm.js";
+import { generateImage } from "./_core/imageGeneration.js";
+import { COOKIE_NAME } from "../shared/const.js";
 
 afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
 describe("current platform integration", () => {
