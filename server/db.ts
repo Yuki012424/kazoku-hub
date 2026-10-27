@@ -150,6 +150,32 @@ export async function updateFamilyMemberName(groupId: number, openId: string, di
     .where(and(eq(familyMemberships.groupId, groupId), eq(familyMemberships.userOpenId, openId)));
 }
 
+export async function removeFamilyMember(groupId: number, ownerOpenId: string, memberOpenId: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+  const groups = await db.select({ ownerOpenId: familyGroups.ownerOpenId }).from(familyGroups).where(eq(familyGroups.id, groupId)).limit(1);
+  const group = groups[0];
+  if (!group || group.ownerOpenId !== ownerOpenId) return { removed: false, reason: "not-owner" as const };
+  if (memberOpenId === group.ownerOpenId) return { removed: false, reason: "owner" as const };
+  const member = await db.select({ id: familyMemberships.id }).from(familyMemberships).where(and(eq(familyMemberships.groupId, groupId), eq(familyMemberships.userOpenId, memberOpenId))).limit(1);
+  if (member.length === 0) return { removed: false, reason: "not-found" as const };
+  await db.delete(pushSubscriptions).where(and(eq(pushSubscriptions.groupId, groupId), eq(pushSubscriptions.userOpenId, memberOpenId)));
+  await db.delete(familyMemberships).where(and(eq(familyMemberships.groupId, groupId), eq(familyMemberships.userOpenId, memberOpenId)));
+  return { removed: true as const };
+}
+
+export async function leaveFamilyGroup(groupId: number, memberOpenId: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+  const groups = await db.select({ ownerOpenId: familyGroups.ownerOpenId }).from(familyGroups).where(eq(familyGroups.id, groupId)).limit(1);
+  const group = groups[0];
+  if (!group) return { left: false, reason: "not-found" as const };
+  if (memberOpenId === group.ownerOpenId) return { left: false, reason: "owner" as const };
+  await db.delete(pushSubscriptions).where(and(eq(pushSubscriptions.groupId, groupId), eq(pushSubscriptions.userOpenId, memberOpenId)));
+  await db.delete(familyMemberships).where(and(eq(familyMemberships.groupId, groupId), eq(familyMemberships.userOpenId, memberOpenId)));
+  return { left: true as const };
+}
+
 export async function getFamilyHubState(groupId: number): Promise<string | null> {
   const db = await getDb();
   if (!db) return null;

@@ -2,7 +2,7 @@ import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
-import { getFamilyMemberships, getFamilyHubState, getGroupPushSubscriptions, getOrCreatePushKeys, isFamilyMember, joinFamilyGroup, createFamilyGroup, removePushSubscription, saveFamilyHubState, savePushSubscription, updateFamilyMemberName } from "./db";
+import { getFamilyMemberships, getFamilyHubState, getGroupPushSubscriptions, getOrCreatePushKeys, isFamilyMember, joinFamilyGroup, createFamilyGroup, leaveFamilyGroup, removeFamilyMember, removePushSubscription, saveFamilyHubState, savePushSubscription, updateFamilyMemberName } from "./db";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import webpush from "web-push";
@@ -113,6 +113,23 @@ export const appRouter = router({
       .mutation(async ({ ctx, input }) => {
         await requireMembership(input.groupId, ctx.user.openId);
         await updateFamilyMemberName(input.groupId, ctx.user.openId, input.displayName);
+        return { ok: true } as const;
+      }),
+    removeMember: protectedProcedure
+      .input(groupIdInput.extend({ memberOpenId: z.string().min(1).max(64) }))
+      .mutation(async ({ ctx, input }) => {
+        const result = await removeFamilyMember(input.groupId, ctx.user.openId, input.memberOpenId);
+        if (result.reason === "not-owner") throw new TRPCError({ code: "FORBIDDEN", message: "グループ作成者だけがメンバーを削除できます" });
+        if (result.reason === "owner") throw new TRPCError({ code: "BAD_REQUEST", message: "グループ作成者は自分で削除できません" });
+        if (result.reason === "not-found") throw new TRPCError({ code: "NOT_FOUND", message: "メンバーが見つかりません" });
+        return { ok: true } as const;
+      }),
+    leave: protectedProcedure
+      .input(groupIdInput)
+      .mutation(async ({ ctx, input }) => {
+        const result = await leaveFamilyGroup(input.groupId, ctx.user.openId);
+        if (result.reason === "owner") throw new TRPCError({ code: "BAD_REQUEST", message: "グループ作成者は先に管理者を引き継ぐ必要があります" });
+        if (result.reason === "not-found") throw new TRPCError({ code: "NOT_FOUND", message: "グループが見つかりません" });
         return { ok: true } as const;
       }),
   }),
