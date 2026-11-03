@@ -164,16 +164,49 @@ export async function removeFamilyMember(groupId: number, ownerOpenId: string, m
   return { removed: true as const };
 }
 
+export async function transferFamilyLeadership(groupId: number, ownerOpenId: string, nextOwnerOpenId: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database is not available");
+  const groups = await db.select({ ownerOpenId: familyGroups.ownerOpenId }).from(familyGroups).where(eq(familyGroups.id, groupId)).limit(1);
+  const group = groups[0];
+  if (!group || group.ownerOpenId !== ownerOpenId) return { transferred: false, reason: "not-owner" as const };
+  if (ownerOpenId === nextOwnerOpenId) return { transferred: false, reason: "same-member" as const };
+  const nextMember = await db.select({ id: familyMemberships.id }).from(familyMemberships).where(and(eq(familyMemberships.groupId, groupId), eq(familyMemberships.userOpenId, nextOwnerOpenId))).limit(1);
+  if (nextMember.length === 0) return { transferred: false, reason: "not-member" as const };
+  await db.update(familyGroups).set({ ownerOpenId: nextOwnerOpenId }).where(eq(familyGroups.id, groupId));
+  await db.update(familyMemberships).set({ role: "member" }).where(eq(familyMemberships.groupId, groupId));
+  await db.update(familyMemberships).set({ role: "owner" }).where(and(eq(familyMemberships.groupId, groupId), eq(familyMemberships.userOpenId, nextOwnerOpenId)));
+  return { transferred: true as const };
+}
+
 export async function leaveFamilyGroup(groupId: number, memberOpenId: string) {
   const db = await getDb();
   if (!db) throw new Error("Database is not available");
   const groups = await db.select({ ownerOpenId: familyGroups.ownerOpenId }).from(familyGroups).where(eq(familyGroups.id, groupId)).limit(1);
   const group = groups[0];
   if (!group) return { left: false, reason: "not-found" as const };
-  if (memberOpenId === group.ownerOpenId) return { left: false, reason: "owner" as const };
+  if (memberOpenId === group.ownerOpenId) {
+    const members = await db.select({ id: familyMemberships.id }).from(familyMemberships).where(eq(familyMemberships.groupId, groupId));
+    if (members.length > 1) {
+      const nextOwner = await db.select({ userOpenId: familyMemberships.userOpenId }).from(familyMemberships).where(and(eq(familyMemberships.groupId, groupId), ne(familyMemberships.userOpenId, memberOpenId))).limit(1);
+      const nextOwnerOpenId = nextOwner[0]?.userOpenId;
+      if (!nextOwnerOpenId) return { left: false, reason: "owner" as const };
+      await db.update(familyGroups).set({ ownerOpenId: nextOwnerOpenId }).where(eq(familyGroups.id, groupId));
+      await db.update(familyMemberships).set({ role: "member" }).where(eq(familyMemberships.groupId, groupId));
+      await db.update(familyMemberships).set({ role: "owner" }).where(and(eq(familyMemberships.groupId, groupId), eq(familyMemberships.userOpenId, nextOwnerOpenId)));
+      await db.delete(pushSubscriptions).where(and(eq(pushSubscriptions.groupId, groupId), eq(pushSubscriptions.userOpenId, memberOpenId)));
+      await db.delete(familyMemberships).where(and(eq(familyMemberships.groupId, groupId), eq(familyMemberships.userOpenId, memberOpenId)));
+      return { left: true, deleted: false as const, transferredTo: nextOwnerOpenId };
+    }
+    await db.delete(pushSubscriptions).where(eq(pushSubscriptions.groupId, groupId));
+    await db.delete(familyHubState).where(eq(familyHubState.id, groupId));
+    await db.delete(familyMemberships).where(eq(familyMemberships.groupId, groupId));
+    await db.delete(familyGroups).where(eq(familyGroups.id, groupId));
+    return { left: true, deleted: true as const };
+  }
   await db.delete(pushSubscriptions).where(and(eq(pushSubscriptions.groupId, groupId), eq(pushSubscriptions.userOpenId, memberOpenId)));
   await db.delete(familyMemberships).where(and(eq(familyMemberships.groupId, groupId), eq(familyMemberships.userOpenId, memberOpenId)));
-  return { left: true as const };
+  return { left: true, deleted: false as const };
 }
 
 export async function getFamilyHubState(groupId: number): Promise<string | null> {
